@@ -2,9 +2,7 @@
 
 #pragma warning disable IDE0005
 using CommandLine;
-using System.Globalization;
 using System.IO;
-using System.Text;
 #pragma warning restore IDE0005
 
 Parser.Default.ParseArguments<CLIArguments>(args).WithParsed(options =>
