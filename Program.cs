@@ -11,10 +11,14 @@ Parser.Default.ParseArguments<CLIArguments>(args).WithParsed(options =>
     {
         CLIArgumentsValidator.Validate(options);
         List<string> startingDirectories = DirectoryScanner.GetStartingDirectory(options.RootPath);
-        foreach (string directory in startingDirectories)
+        List<NodeModulesFolder> nodeModulesFolders = DirectoryScanner.ScanDirectories(startingDirectories);
+
+        foreach (NodeModulesFolder folder in nodeModulesFolders)
         {
-            Console.WriteLine(directory);
+            Console.WriteLine($"{folder.Path} - {(int)folder.SizeInMb}, {folder.AgeInDays}");
         }
+
+        Console.WriteLine($"Total node_module size is {(int)nodeModulesFolders.Sum(n => n.SizeInMb)} MB");
 
     }
     catch (ArgumentException e)
@@ -34,6 +38,82 @@ class DirectoryScanner
         // We also need to check if the drive is ready (e.g. CD-ROM or a USB drive), otherwise it will throw an exception
         return DriveInfo.GetDrives().Where(d => d.IsReady).Select(d => d.Name).ToList();
     }
+
+    internal static List<NodeModulesFolder> ScanDirectories(List<string> startingDirectories)
+    {
+        List<NodeModulesFolder> nodeModulesFolders = new List<NodeModulesFolder>();
+
+        // Explicitly walk the directory tree instead of using recursion to avoid stack overflows for deep directory trees
+        // Recursive methods work fine for shallow trees, but directory trees on a full drive can be hundreds of levels deep in theory, and recursive calls consume stack frames
+        foreach (string startingDirectory in startingDirectories)
+        {
+            var stack = new Stack<string>();
+            stack.Push(startingDirectory);
+
+            while (stack.Count > 0)
+            {
+                string current = stack.Pop();
+
+                string[] subDirs;
+                try
+                {
+                    subDirs = Directory.GetDirectories(current);
+                }
+                catch (UnauthorizedAccessException) { continue; } // skip protected folders
+                catch (IOException) { continue; }
+
+                foreach (string subDir in subDirs)
+                {
+                    if (Path.GetFileName(subDir) == "node_modules")
+                    {
+                        // Found one — collect it, don't recurse into it
+                        var dirInfo = new DirectoryInfo(subDir);
+                        var lastModified = dirInfo.GetFileSystemInfos()
+                            .Select(f => f.LastWriteTime)
+                            .DefaultIfEmpty(dirInfo.LastWriteTime) // If the directory is empty, use the last write time of the directory
+                            .Max();
+                        nodeModulesFolders.Add(new NodeModulesFolder(subDir, GetDirectorySize(dirInfo), lastModified));
+                    }
+                    else
+                    {
+                        stack.Push(subDir); // keep searching deeper
+                    }
+                }
+            }
+        }
+        return nodeModulesFolders;
+    }
+
+    // Skips symlinks and junction points to avoid counting the same physical files multiple times.
+    // This is especially important for pnpm, which symlinks packages from a .pnpm store into node_modules.
+    private static long GetDirectorySize(DirectoryInfo rootDir)
+    {
+        long size = 0;
+        var stack = new Stack<DirectoryInfo>();
+        stack.Push(rootDir);
+
+        while (stack.Count > 0)
+        {
+            DirectoryInfo dir = stack.Pop();
+            try
+            {
+                foreach (var file in dir.EnumerateFiles())
+                {
+                    if (!file.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                        size += file.Length;
+                }
+                foreach (var subDir in dir.EnumerateDirectories())
+                {
+                    if (!subDir.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                        stack.Push(subDir);
+                }
+            }
+            catch (UnauthorizedAccessException) { }
+            catch (IOException) { }
+        }
+
+        return size;
+    }
 }
 
 class CLIArgumentsValidator
@@ -45,7 +125,7 @@ class CLIArgumentsValidator
 
         if (modifiedAgo < 0)
         {
-            throw new ArgumentException("Modified age must be a non-negative number");
+            throw new ArgumentException("Modified age must be a non-negative number of days");
         }
 
         if (File.Exists(rootPath))
@@ -67,4 +147,10 @@ class CLIArguments
 
     [Option('m', "modified-ago", HelpText = "Modified age in days (int)")]
     public int? ModifiedAgo { get; set; }
+}
+
+internal record NodeModulesFolder(string Path, long SizeBytes, DateTime LastModified)
+{
+    public int AgeInDays => (DateTime.Now - LastModified).Days;
+    public double SizeInMb => SizeBytes / 1024.0 / 1024.0; // Actual size, not the size it takes up on disk (which is larger)
 }
