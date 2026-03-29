@@ -11,7 +11,8 @@ Parser.Default.ParseArguments<CLIArguments>(args).WithParsed(options =>
     {
         CLIArgumentsValidator.Validate(options);
         List<string> startingDirectories = DirectoryScanner.GetStartingDirectory(options.RootPath);
-        List<NodeModulesFolder> nodeModulesFolders = DirectoryScanner.ScanDirectories(startingDirectories);
+        HashSet<string> excludedFolders = new(options.Exclude, StringComparer.OrdinalIgnoreCase);
+        List<NodeModulesFolder> nodeModulesFolders = DirectoryScanner.ScanDirectories(startingDirectories, excludedFolders);
 
         foreach (NodeModulesFolder folder in nodeModulesFolders)
         {
@@ -39,7 +40,7 @@ class DirectoryScanner
         return DriveInfo.GetDrives().Where(d => d.IsReady).Select(d => d.Name).ToList();
     }
 
-    internal static List<NodeModulesFolder> ScanDirectories(List<string> startingDirectories)
+    internal static List<NodeModulesFolder> ScanDirectories(List<string> startingDirectories, HashSet<string> excludedFolders)
     {
         List<NodeModulesFolder> nodeModulesFolders = new List<NodeModulesFolder>();
 
@@ -64,7 +65,11 @@ class DirectoryScanner
 
                 foreach (string subDir in subDirs)
                 {
-                    if (Path.GetFileName(subDir) == "node_modules")
+                    string folderName = Path.GetFileName(subDir);
+
+                    if (excludedFolders.Contains(folderName)) continue;
+
+                    if (folderName == "node_modules")
                     {
                         // Found one — collect it, don't recurse into it
                         var dirInfo = new DirectoryInfo(subDir);
@@ -147,6 +152,9 @@ class CLIArguments
 
     [Option('m', "modified-ago", HelpText = "Modified age in days (int)")]
     public int? ModifiedAgo { get; set; }
+
+    [Option('e', "exclude", Separator = ',', HelpText = "Comma-separated list of directory names to exclude (e.g. --exclude a,b,c)")]
+    public IEnumerable<string> Exclude { get; set; } = [];
 }
 
 internal record NodeModulesFolder(string Path, long SizeBytes, DateTime LastModified)
