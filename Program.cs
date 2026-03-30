@@ -12,15 +12,15 @@ Parser.Default.ParseArguments<CLIArguments>(args).WithParsed(options =>
         CLIArgumentsValidator.Validate(options);
         List<string> startingDirectories = DirectoryScanner.GetStartingDirectory(options.RootPath);
         HashSet<string> excludedFolders = new(options.Exclude, StringComparer.OrdinalIgnoreCase);
-        List<NodeModulesFolder> nodeModulesFolders = DirectoryScanner.ScanDirectories(startingDirectories, excludedFolders);
+        (List<NodeModulesFolder> nodeModulesFolders, int directoryCount) = DirectoryScanner.ScanDirectories(startingDirectories, excludedFolders, options.MinModifiedAgo ?? 0);
 
         foreach (NodeModulesFolder folder in nodeModulesFolders)
         {
-            Console.WriteLine($"{folder.Path} - {(int)folder.SizeInMb}, {folder.AgeInDays}");
+            Console.WriteLine($"{folder.Path} - {(int)folder.SizeInMb}, {folder.AgeInDays} days ago");
         }
 
         Console.WriteLine($"Total node_module size is {(int)nodeModulesFolders.Sum(n => n.SizeInMb)} MB");
-
+        Console.WriteLine($"Total directories scanned: {directoryCount}");
     }
     catch (ArgumentException e)
     {
@@ -40,9 +40,10 @@ class DirectoryScanner
         return DriveInfo.GetDrives().Where(d => d.IsReady).Select(d => d.Name).ToList();
     }
 
-    internal static List<NodeModulesFolder> ScanDirectories(List<string> startingDirectories, HashSet<string> excludedFolders)
+    internal static (List<NodeModulesFolder>, int) ScanDirectories(List<string> startingDirectories, HashSet<string> excludedFolders, int minModifiedAgo)
     {
         List<NodeModulesFolder> nodeModulesFolders = new List<NodeModulesFolder>();
+        int directoryCount = 0;
 
         // Explicitly walk the directory tree instead of using recursion to avoid stack overflows for deep directory trees
         // Recursive methods work fine for shallow trees, but directory trees on a full drive can be hundreds of levels deep in theory, and recursive calls consume stack frames
@@ -77,16 +78,21 @@ class DirectoryScanner
                             .Select(f => f.LastWriteTime)
                             .DefaultIfEmpty(dirInfo.LastWriteTime) // If the directory is empty, use the last write time of the directory
                             .Max();
+
+                        if (lastModified > DateTime.Now.AddDays(-minModifiedAgo)) continue;
+
                         nodeModulesFolders.Add(new NodeModulesFolder(subDir, GetDirectorySize(dirInfo), lastModified));
+
                     }
                     else
                     {
+                        directoryCount++;
                         stack.Push(subDir); // keep searching deeper
                     }
                 }
             }
         }
-        return nodeModulesFolders;
+        return (nodeModulesFolders, directoryCount);
     }
 
     // Skips symlinks and junction points to avoid counting the same physical files multiple times.
@@ -125,7 +131,7 @@ class CLIArgumentsValidator
 {
     internal static void Validate(CLIArguments arguments)
     {
-        int modifiedAgo = arguments.ModifiedAgo ?? 0;
+        int modifiedAgo = arguments.MinModifiedAgo ?? 0;
         string rootPath = arguments.RootPath;
 
         if (modifiedAgo < 0)
@@ -150,8 +156,8 @@ class CLIArguments
     [Value(0, MetaName = "root-path", HelpText = "Starting directory for the search")]
     public string RootPath { get; set; } = string.Empty;
 
-    [Option('m', "modified-ago", HelpText = "Modified age in days (int)")]
-    public int? ModifiedAgo { get; set; }
+    [Option('m', "min-modified-ago", HelpText = "Only include directories modified longer than X days ago (int)")]
+    public int? MinModifiedAgo { get; set; }
 
     [Option('e', "exclude", Separator = ',', HelpText = "Comma-separated list of directory names to exclude (e.g. --exclude a,b,c)")]
     public IEnumerable<string> Exclude { get; set; } = [];
