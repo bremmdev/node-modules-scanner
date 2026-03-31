@@ -1,8 +1,10 @@
 #:package CommandLineParser@2.9.1
+#:package Spectre.Console@0.54.1-alpha.0.86
 
 #pragma warning disable IDE0005
 using CommandLine;
 using System.IO;
+using Spectre.Console;
 #pragma warning restore IDE0005
 
 Parser.Default.ParseArguments<CLIArguments>(args).WithParsed(options =>
@@ -12,19 +14,16 @@ Parser.Default.ParseArguments<CLIArguments>(args).WithParsed(options =>
         CLIArgumentsValidator.Validate(options);
         List<string> startingDirectories = DirectoryScanner.GetStartingDirectory(options.RootPath);
         HashSet<string> excludedFolders = new(options.Exclude, StringComparer.OrdinalIgnoreCase);
-        (List<NodeModulesFolder> nodeModulesFolders, int directoryCount) = DirectoryScanner.ScanDirectories(startingDirectories, excludedFolders, options.MinModifiedAgo ?? 0);
+        (IEnumerable<NodeModulesFolder> nodeModulesFolders, int directoryCount) = DirectoryScanner.ScanDirectories(startingDirectories, excludedFolders, options.MinModifiedAgo ?? 0);
 
-        foreach (NodeModulesFolder folder in nodeModulesFolders)
-        {
-            Console.WriteLine($"{folder.Path} - {(int)folder.SizeInMb}, {folder.AgeInDays} days ago");
-        }
+        // Order by last modified and filter out empty folders
+        IEnumerable<NodeModulesFolder> filteredNodeModulesFolders = nodeModulesFolders.OrderBy(f => f.LastModified).Where(f => Math.Round(f.SizeInMb) > 0);
 
-        Console.WriteLine($"Total node_module size is {(int)nodeModulesFolders.Sum(n => n.SizeInMb)} MB");
-        Console.WriteLine($"Total directories scanned: {directoryCount}");
+        ConsoleOutput.Output(filteredNodeModulesFolders.ToList(), directoryCount);
     }
     catch (ArgumentException e)
     {
-        Console.Error.WriteLine($"Error: {e.Message}");
+        AnsiConsole.MarkupLineInterpolated($"[red]✗[/] Error: {e.Message}");
     }
 });
 
@@ -40,7 +39,7 @@ class DirectoryScanner
         return DriveInfo.GetDrives().Where(d => d.IsReady).Select(d => d.Name).ToList();
     }
 
-    internal static (List<NodeModulesFolder>, int) ScanDirectories(List<string> startingDirectories, HashSet<string> excludedFolders, int minModifiedAgo)
+    internal static (IEnumerable<NodeModulesFolder>, int) ScanDirectories(List<string> startingDirectories, HashSet<string> excludedFolders, int minModifiedAgo)
     {
         List<NodeModulesFolder> nodeModulesFolders = new List<NodeModulesFolder>();
         int directoryCount = 0;
@@ -124,6 +123,42 @@ class DirectoryScanner
         }
 
         return size;
+    }
+}
+
+class ConsoleOutput
+{
+    internal static void Output(List<NodeModulesFolder> nodeModulesFolders, int directoryCount)
+    {
+        var table = new Table().AddColumn("Path").AddColumn("Size").AddColumn("Last Modified");
+
+        foreach (var folder in nodeModulesFolders)
+        {
+            var lastModified = folder.LastModified.ToString("yyyy-MM-dd");
+            var rowColor = folder.AgeInDays > 180 ? Color.Red
+                : folder.AgeInDays > 90 ? Color.Yellow
+                : Color.Green;
+
+            var style = new Style(foreground: rowColor);
+
+            table.AddRow(
+                new Text(folder.Path, style),
+                new Text($"{Math.Round(folder.SizeInMb).ToString()} MB", style),
+                new Text(lastModified, style)
+            );
+        }
+
+        AnsiConsole.Write(table);
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine(
+            "[bold]Legend[/]\n" +
+            "[green]Green[/]: modified within the last 90 days\n" +
+            "[yellow]Yellow[/]: modified 91 to 180 days ago\n" +
+            "[red]Red[/]: modified more than 180 days ago"
+        );
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLineInterpolated($"[green]✓[/] Total node_module size is {(int)nodeModulesFolders.Sum(n => n.SizeInMb)} MB");
+        AnsiConsole.MarkupLineInterpolated($"[green]✓[/] Total directories scanned: {directoryCount}");
     }
 }
 
