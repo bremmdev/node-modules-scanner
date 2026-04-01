@@ -12,14 +12,16 @@ Parser.Default.ParseArguments<CLIArguments>(args).WithParsed(options =>
     try
     {
         CLIArgumentsValidator.Validate(options);
-        List<string> startingDirectories = DirectoryScanner.GetStartingDirectory(options.RootPath);
+        IReadOnlyList<string> startingDirectories = DirectoryScanner.GetStartingDirectory(options.RootPath);
         HashSet<string> excludedFolders = new(options.Exclude, StringComparer.OrdinalIgnoreCase);
         (IEnumerable<NodeModulesFolder> nodeModulesFolders, int directoryCount) = DirectoryScanner.ScanDirectories(startingDirectories, excludedFolders, options.MinModifiedAgo ?? 0);
 
         // Order by last modified and filter out empty folders
-        IEnumerable<NodeModulesFolder> filteredNodeModulesFolders = nodeModulesFolders.OrderBy(f => f.LastModified).Where(f => Math.Round(f.SizeInMb) > 0);
-
-        ConsoleOutput.Output(filteredNodeModulesFolders.ToList(), directoryCount);
+        IReadOnlyList<NodeModulesFolder> filteredNodeModulesFolders = nodeModulesFolders
+        .OrderBy(f => f.LastModified)
+        .Where(f => Math.Round(f.SizeInMb) > 0)
+        .ToList();
+        ConsoleOutput.Output(filteredNodeModulesFolders, directoryCount);
     }
     catch (ArgumentException e)
     {
@@ -29,7 +31,7 @@ Parser.Default.ParseArguments<CLIArguments>(args).WithParsed(options =>
 
 class DirectoryScanner
 {
-    internal static List<string> GetStartingDirectory(string startingDirectory)
+    internal static IReadOnlyList<string> GetStartingDirectory(string startingDirectory)
     {
         // If we have a valid directory, use it, otherwise we get all drives
         if (!String.IsNullOrWhiteSpace(startingDirectory)) return [startingDirectory];
@@ -39,7 +41,7 @@ class DirectoryScanner
         return DriveInfo.GetDrives().Where(d => d.IsReady).Select(d => d.Name).ToList();
     }
 
-    internal static (IEnumerable<NodeModulesFolder>, int) ScanDirectories(List<string> startingDirectories, HashSet<string> excludedFolders, int minModifiedAgo)
+    internal static (IReadOnlyList<NodeModulesFolder>, int) ScanDirectories(IEnumerable<string> startingDirectories, HashSet<string> excludedFolders, int minModifiedAgo)
     {
         List<NodeModulesFolder> nodeModulesFolders = new List<NodeModulesFolder>();
         int directoryCount = 0;
@@ -81,7 +83,6 @@ class DirectoryScanner
                         if (lastModified > DateTime.Now.AddDays(-minModifiedAgo)) continue;
 
                         nodeModulesFolders.Add(new NodeModulesFolder(subDir, GetDirectorySize(dirInfo), lastModified));
-
                     }
                     else
                     {
@@ -128,7 +129,7 @@ class DirectoryScanner
 
 class ConsoleOutput
 {
-    internal static void Output(List<NodeModulesFolder> nodeModulesFolders, int directoryCount)
+    internal static void Output(IReadOnlyList<NodeModulesFolder> nodeModulesFolders, int directoryCount)
     {
         var table = new Table().AddColumn("Path").AddColumn("Size").AddColumn("Last Modified");
 
@@ -166,12 +167,12 @@ class CLIArgumentsValidator
 {
     internal static void Validate(CLIArguments arguments)
     {
-        int modifiedAgo = arguments.MinModifiedAgo ?? 0;
+        int minModifiedAgo = arguments.MinModifiedAgo ?? 0;
         string rootPath = arguments.RootPath;
 
-        if (modifiedAgo < 0)
+        if (minModifiedAgo < 0)
         {
-            throw new ArgumentException("Modified age must be a non-negative number of days");
+            throw new ArgumentException("Minimum modified age must be a non-negative number of days");
         }
 
         if (File.Exists(rootPath))
