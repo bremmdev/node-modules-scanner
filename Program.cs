@@ -3,6 +3,7 @@
 
 #pragma warning disable IDE0005
 using CommandLine;
+using System.Diagnostics;
 using System.IO;
 using Spectre.Console;
 #pragma warning restore IDE0005
@@ -31,6 +32,8 @@ Parser.Default.ParseArguments<CLIArguments>(args).WithParsed(options =>
 
 class DirectoryScanner
 {
+    private const int StatusUpdateIntervalMs = 250;
+
     internal static IReadOnlyList<string> GetStartingDirectory(string startingDirectory)
     {
         // If we have a valid directory, use it, otherwise we get all drives
@@ -48,50 +51,63 @@ class DirectoryScanner
 
         // Explicitly walk the directory tree instead of using recursion to avoid stack overflows for deep directory trees
         // Recursive methods work fine for shallow trees, but directory trees on a full drive can be hundreds of levels deep in theory, and recursive calls consume stack frames
-        foreach (string startingDirectory in startingDirectories)
+        AnsiConsole.Status().Start("Scanning directories for node_modules...", ctx =>
         {
-            var stack = new Stack<string>();
-            stack.Push(startingDirectory);
+            Stopwatch stopwatch = Stopwatch.StartNew();
+            TimeSpan lastStatusUpdate = TimeSpan.Zero;
 
-            while (stack.Count > 0)
+            foreach (string startingDirectory in startingDirectories)
             {
-                string current = stack.Pop();
+                var stack = new Stack<string>();
+                stack.Push(startingDirectory);
 
-                string[] subDirs;
-                try
+                while (stack.Count > 0)
                 {
-                    subDirs = Directory.GetDirectories(current);
-                }
-                catch (UnauthorizedAccessException) { continue; } // skip protected folders
-                catch (IOException) { continue; }
-
-                foreach (string subDir in subDirs)
-                {
-                    string folderName = Path.GetFileName(subDir);
-
-                    if (excludedFolders.Contains(folderName)) continue;
-
-                    if (folderName == "node_modules")
+                    if (stopwatch.Elapsed - lastStatusUpdate >= TimeSpan.FromMilliseconds(StatusUpdateIntervalMs))
                     {
-                        // Found one — collect it, don't recurse into it
-                        var dirInfo = new DirectoryInfo(subDir);
-                        var lastModified = dirInfo.GetFileSystemInfos()
-                            .Select(f => f.LastWriteTime)
-                            .DefaultIfEmpty(dirInfo.LastWriteTime) // If the directory is empty, use the last write time of the directory
-                            .Max();
-
-                        if (lastModified > DateTime.Now.AddDays(-minModifiedAgo)) continue;
-
-                        nodeModulesFolders.Add(new NodeModulesFolder(subDir, GetDirectorySize(dirInfo), lastModified));
+                        lastStatusUpdate = stopwatch.Elapsed;
+                        ctx.Status(
+                            $"Scanning directories for node_modules... [grey]{directoryCount:N0} scanned[/] [grey]{nodeModulesFolders.Count:N0} found[/] [grey]{stopwatch.Elapsed:mm\\:ss}[/]");
                     }
-                    else
+
+                    string current = stack.Pop();
+
+                    string[] subDirs;
+                    try
                     {
-                        directoryCount++;
-                        stack.Push(subDir); // keep searching deeper
+                        subDirs = Directory.GetDirectories(current);
+                    }
+                    catch (UnauthorizedAccessException) { continue; } // skip protected folders
+                    catch (IOException) { continue; }
+
+                    foreach (string subDir in subDirs)
+                    {
+                        string folderName = Path.GetFileName(subDir);
+
+                        if (excludedFolders.Contains(folderName)) continue;
+
+                        if (folderName == "node_modules")
+                        {
+                            // Found one — collect it, don't recurse into it
+                            var dirInfo = new DirectoryInfo(subDir);
+                            var lastModified = dirInfo.GetFileSystemInfos()
+                                        .Select(f => f.LastWriteTime)
+                                        .DefaultIfEmpty(dirInfo.LastWriteTime) // If the directory is empty, use the last write time of the directory
+                                        .Max();
+
+                            if (lastModified > DateTime.Now.AddDays(-minModifiedAgo)) continue;
+
+                            nodeModulesFolders.Add(new NodeModulesFolder(subDir, GetDirectorySize(dirInfo), lastModified));
+                        }
+                        else
+                        {
+                            directoryCount++;
+                            stack.Push(subDir); // keep searching deeper
+                        }
                     }
                 }
             }
-        }
+        });
         return (nodeModulesFolders, directoryCount);
     }
 
